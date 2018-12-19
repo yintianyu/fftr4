@@ -1,13 +1,40 @@
 // See README.md for license details.
 
-package fft
+package fftr4
 
-import java.io.File
-
+import chisel3.core.FixedPoint
 import chisel3.iotesters._
+import Const._
+import FFT.Complex
 //import dsptools._
 
-class queue_UnitTest(c: FFT_Queue) extends PeekPokeTester(c) {
+trait hasFFTTestFunction{
+    def fft(x: Array[Complex]): Array[Complex] = {
+        require(x.length > 0 && (x.length & (x.length - 1)) == 0, "array size should be power of two")
+        fft(x, 0, x.length, 1)
+    }
+
+    def fft(x: Array[Double]): Array[Complex] = fft(x.map(re => new Complex(re, 0.0)))
+    def rfft(x: Array[Double]): Array[Complex] = fft(x).take(x.length / 2 + 1)
+
+    private def fft(x: Array[Complex], start: Int, n: Int, stride: Int) : Array[Complex] = {
+        if (n == 1)
+            return Array(x(start))
+
+        val X = fft(x, start, n / 2, 2 * stride) ++ fft(x, start + stride, n / 2, 2 * stride)
+
+        for (k <- 0 until n / 2) {
+            val t = X(k)
+            val arg = -2 * math.Pi * k / n
+            val c = new Complex(math.cos(arg), math.sin(arg)) * X(k + n / 2)
+            X(k) = t + c
+            X(k + n / 2) = t - c
+        }
+        X
+    }
+}
+
+class queue_UnitTest(c: FFTQueue) extends PeekPokeTester(c) {
     /**
       * compute the gcd and the number of steps it should take to do it
       *
@@ -16,62 +43,58 @@ class queue_UnitTest(c: FFT_Queue) extends PeekPokeTester(c) {
       * @return the GCD of a and b
       */
 
-    private val queue = c
-    poke(c.io.in_re, 100)
-    poke(c.io.in_im, 200)
-    step(1)
-    poke(c.io.in_re, 101)
-    poke(c.io.in_im, 201)
-    step(1)
-    poke(c.io.in_re, 102)
-    poke(c.io.in_im, 202)
-    step(1)
-    poke(c.io.in_re, 103)
-    poke(c.io.in_im, 203)
-    for(i <- 0 until 4){
-        step(1)
-        expect(c.io.out_re, 100 + i)
-        expect(c.io.out_im, 200 + i)
-    }
+//    private val queue = c
+//    poke(c.io.in_re, 100)
+//    poke(c.io.in_im, 200)
+//    step(1)
+//    poke(c.io.in_re, 101)
+//    poke(c.io.in_im, 201)
+//    step(1)
+//    poke(c.io.in_re, 102)
+//    poke(c.io.in_im, 202)
+//    step(1)
+//    poke(c.io.in_re, 103)
+//    poke(c.io.in_im, 203)
+//    for(i <- 0 until 4){
+//        step(1)
+//        expect(c.io.out_re, 100 + i)
+//        expect(c.io.out_im, 200 + i)
+//    }
 
 }
 
-class butterfly_UnitTest(c: Butterfly_R4) extends PeekPokeTester(c){
-//    poke(c.io.x1.real, value=3)
-//    poke(c.io.x1.imag, value=4)
-//    poke(c.io.x2.real, value=5)
-//    poke(c.io.x2.imag, value=6)
-//    poke(c.io.x3.real, value=7)
-//    poke(c.io.x3.imag, value=8)
-//    poke(c.io.x4.real, value=9)
-//    poke(c.io.x4.imag, value=10)
-    poke(c.io.x1, 35)
-
-//    val y1_real = peek(c.io.y1.real)
-//    val y1_imag = peek(c.io.y1.imag)
-//    val y2_real = peek(c.io.y2.real)
-//    val y2_imag = peek(c.io.y2.imag)
-//    val y3_real = peek(c.io.y3.real)
-//    val y3_imag = peek(c.io.y3.imag)
-//    val y4_real = peek(c.io.y4.real)
-//    val y4_imag = peek(c.io.y4.imag)
-//    printf("%d\n", y1_real)
-//    printf("%d\n", y1_imag)
-//    printf("%d\n", y2_real)
-//    printf("%d\n", y2_imag)
-//    printf("%d\n", y3_real)
-//    printf("%d\n", y3_imag)
-//    printf("%d\n", y4_real)
-//    printf("%d\n", y4_imag)
-    val y1 = peek(c.io.y1)
-    val y2 = peek(c.io.y2)
-    val y3 = peek(c.io.y3)
-    val y4 = peek(c.io.y4)
-    printf("%d\n", y1)
-    printf("%d\n", y2)
-    printf("%d\n", y3)
-    printf("%d\n", y4)
-
+class MDC_UnitTest(c: MDC) extends PeekPokeTester(c) with hasFFTTestFunction {
+    poke(c.io.din_valid, value=1)
+    var cycle = 0
+    var xList = new Array[Complex](64)
+    for(i <- 0 until 64){
+        xList(i) = new Complex(re=i*0.01, im=0)
+        poke(c.io.din.real, FixedPoint.toBigInt(i * 0.01, RADIX))
+        poke(c.io.din.imag, FixedPoint.toBigInt(0, RADIX))
+        step(1)
+        cycle += 1
+    }
+    var outputCount = 0
+    val X = fft(xList)
+    var rel_err: Double = 0
+    while(outputCount < 64){
+        val output_valid = peek(c.io.dout_valid)
+        if(output_valid == 1){
+            val dout = peek(c.io.dout)
+            val dout_real = dout("real").toFloat / math.pow(2, RADIX)
+            val dout_imag = dout("imag").toFloat / math.pow(2, RADIX)
+            val gt_real = X(outputCount).re
+            val gt_imag = X(outputCount).im
+            printf("Cycle %d: Output %d = %.3f+%.3fj, GroundTruth = %.3f+%.3fj\n", cycle, outputCount, dout_real,
+                dout_imag, gt_real, gt_imag)
+            rel_err += math.abs((dout_real - gt_real) / (gt_real + 1e-6)) + math.abs((dout_imag - gt_imag) / (gt_imag + 1e-6))
+            outputCount += 1
+        }
+        step(1)
+        cycle += 1
+    }
+    rel_err /= 64
+    printf("relative error = %.4f%%\n", rel_err * 100)
 }
 
 /**
@@ -102,8 +125,8 @@ class FFTTester extends ChiselFlatSpec {
 //    }
     for ( backendName <- backendNames ) {
         "FFT" should s"(with $backendName)" in {
-            Driver(() => new Butterfly_R4, backendName) {
-                c => new butterfly_UnitTest(c)
+            Driver(() => new MDC, backendName) {
+                c => new MDC_UnitTest(c)
             } should be (true)
         }
     }
